@@ -4,33 +4,6 @@ package io.github.melvincabatuan.androidstudioopencv;
  * Created by root on 6/2/15.
  */
 
-import static org.bytedeco.javacpp.opencv_core.*;
-import static org.bytedeco.javacpp.opencv_imgproc.*;
-import static org.bytedeco.javacpp.opencv_highgui.*;
-import java.nio.ByteBuffer;
-import android.app.Activity;
-import android.app.AlertDialog;
-import android.content.Context;
-import android.graphics.Canvas;
-import android.graphics.Color;
-import android.graphics.ImageFormat;
-import android.graphics.Paint;
-import android.hardware.Camera;
-import android.hardware.Camera.Size;
-import android.os.Bundle;
-import android.view.SurfaceHolder;
-import android.view.SurfaceView;
-import android.view.View;
-import android.view.Window;
-import android.view.WindowManager;
-import android.widget.FrameLayout;
-import java.io.File;
-import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.util.List;
-import org.bytedeco.javacpp.Loader;
-import org.bytedeco.javacpp.opencv_objdetect;
-
 import android.graphics.Bitmap;
 import android.graphics.ImageFormat;
 import android.hardware.Camera;
@@ -57,10 +30,6 @@ public class CameraPreview implements SurfaceHolder.Callback, Camera.PreviewCall
     public Parameters parameters;
 
 
-    public static final int SUBSAMPLING_FACTOR = 4;
-    private Mat grayImage;
-    private CvMemStorage storage;
-
     Handler mHandler = new Handler(Looper.getMainLooper());
 
     public CameraPreview(int PreviewlayoutWidth, int PreviewlayoutHeight,
@@ -72,10 +41,26 @@ public class CameraPreview implements SurfaceHolder.Callback, Camera.PreviewCall
         pixels = new int[PreviewSizeWidth * PreviewSizeHeight];
     }
 
+
+
+    int i = 0;
+    long now, oldnow, count = 0;
+
     @Override
     public void onPreviewFrame(byte[] arg0, Camera arg1) {
-        Log.d("CameraPreview:", "ON Preview frame");
+        // Log.d("CameraPreview:", "ON Preview frame");
+
+        i++;
+        now = System.nanoTime()/1000;
+        if (i>3) {
+            Log.d("onPreviewFrame: ", "Measured: " + 1000000L / (now - oldnow) + " fps.");
+            count++;
+        }
+        oldnow = now;
+
+
         /// NV21 Format ONLY
+
         if (imageFormat == ImageFormat.NV21) {
 
             if (!bProcessing) {
@@ -179,8 +164,12 @@ public class CameraPreview implements SurfaceHolder.Callback, Camera.PreviewCall
     private Runnable DoImageProcessing = new Runnable() {
         public void run() {
             bProcessing = true;
-            //TO DO
-           // ImageProcessing(PreviewSizeWidth, PreviewSizeHeight, FrameData, pixels);
+
+            // Converts YUV420 NV21 to Y888 (RGB8888) (GrayScale)
+            //applyGrayScale(PreviewSizeWidth, PreviewSizeHeight, FrameData, pixels);
+
+            pixels = convertYUV420_NV21toRGB8888(PreviewSizeWidth, PreviewSizeHeight, FrameData);
+
             bitmap.setPixels(pixels, 0, PreviewSizeWidth, 0, 0, PreviewSizeWidth, PreviewSizeHeight);
             MyCameraPreview.setImageBitmap(bitmap);
             bProcessing = false;
@@ -188,10 +177,73 @@ public class CameraPreview implements SurfaceHolder.Callback, Camera.PreviewCall
     };
 
 
-    void ImageProcessing(int width, int height, byte[] data, int[] pixels) {
-        Mat src = new Mat(width, height, CvType.CV_8UC3);
-        src.put(0, 0, data);
-        Mat dst = new Mat();
-         cvtColor(src,dst,BGRA2BGR);
+    /**
+     * Converts YUV420 NV21 to Y888 (RGB8888). The grayscale image still holds 3 bytes on the pixel.
+     *
+     * @param pixels output array with the converted array of grayscale pixels
+     * @param data byte array on YUV420 NV21 format.
+     * @param width pixels width
+     * @param height pixels height
+     */
+    public static void applyGrayScale(int width, int height, byte [] data, int [] pixels) {
+        int p;
+        int size = width*height;
+        for(int i = 0; i < size; i++) {
+            p = data[i] & 0xFF;
+            pixels[i] = 0xff000000 | p<<16 | p<<8 | p;
+        }
+    }
+
+
+
+    /**
+     * Converts YUV420 NV21 to RGB8888
+     *
+     * @param data byte array on YUV420 NV21 format.
+     * @param width pixels width
+     * @param height pixels height
+     * @return a RGB8888 pixels int array. Where each int is a pixels ARGB.
+     */
+    public static int[] convertYUV420_NV21toRGB8888(int width, int height, byte [] data) {
+        int size = width*height;
+        int offset = size;
+        int[] pixels = new int[size];
+        int u, v, y1, y2, y3, y4;
+
+        // i percorre os Y and the final pixels
+        // k percorre os pixles U e V
+        for(int i=0, k=0; i < size; i+=2, k+=2) {
+            y1 = data[i  ]&0xff;
+            y2 = data[i+1]&0xff;
+            y3 = data[width+i  ]&0xff;
+            y4 = data[width+i+1]&0xff;
+
+            u = data[offset+k  ]&0xff;
+            v = data[offset+k+1]&0xff;
+            u = u-128;
+            v = v-128;
+
+            pixels[i  ] = convertYUVtoRGB(y1, u, v);
+            pixels[i+1] = convertYUVtoRGB(y2, u, v);
+            pixels[width+i  ] = convertYUVtoRGB(y3, u, v);
+            pixels[width+i+1] = convertYUVtoRGB(y4, u, v);
+
+            if (i!=0 && (i+2)%width==0)
+                i+=width;
+        }
+
+        return pixels;
+    }
+
+    private static int convertYUVtoRGB(int y, int u, int v) {
+        int r,g,b;
+
+        r = y + (int)1.402f*v;
+        g = y - (int)(0.344f*u +0.714f*v);
+        b = y + (int)1.772f*u;
+        r = r>255? 255 : r<0 ? 0 : r;
+        g = g>255? 255 : g<0 ? 0 : g;
+        b = b>255? 255 : b<0 ? 0 : b;
+        return 0xff000000 | (b<<16) | (g<<8) | r;
     }
 }
